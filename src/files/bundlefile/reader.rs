@@ -196,6 +196,29 @@ impl<T: AsRef<[u8]>> BundleFileReader<Cursor<T>> {
         let data = &self.reader.get_ref().as_ref()[self.data_offset as usize..];
         read_single_file(&self.blocks, entry, data)
     }
+
+    /// Reads `len` bytes starting `start` bytes into a file, decompressing only the blocks that
+    /// cover them. [`BundleFileReader::read_at_entry`] decompresses a whole file, which is a lot
+    /// to do for a large `.resS` of which an object needs a few kilobytes.
+    pub fn read_at_entry_range(
+        &self,
+        entry: &FileEntry,
+        start: u64,
+        len: usize,
+    ) -> Result<Vec<u8>, std::io::Error> {
+        let end = start
+            .checked_add(len as u64)
+            .filter(|&end| end <= entry.size.max(0) as u64)
+            .ok_or_else(|| std::io::Error::other("range reaches past the end of the file"))?;
+        let part = FileEntry {
+            offset: entry.offset + start as i64,
+            size: (end - start) as i64,
+            flags: entry.flags,
+            path: entry.path.clone(),
+        };
+        let data = &self.reader.get_ref().as_ref()[self.data_offset as usize..];
+        read_single_file(&self.blocks, &part, data)
+    }
 }
 
 fn scan_file_start(blocks: &[StorageBlock], file: &FileEntry) -> (usize, u64, u64) {
