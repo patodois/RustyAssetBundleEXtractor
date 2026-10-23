@@ -218,6 +218,9 @@ fn scan_file_start(blocks: &[StorageBlock], file: &FileEntry) -> (usize, u64, u6
     (block_index, offset_compressed, offset_uncompressed)
 }
 
+/// The most `read_single_file` reserves up front: 256 MiB.
+const MAX_RESERVE: usize = 256 << 20;
+
 /// Reads a single file to memory
 fn read_single_file(
     blocks: &[StorageBlock],
@@ -232,7 +235,30 @@ fn read_single_file(
 
     let mut skip_read = file.offset as usize - block_offset_uncompressed as usize;
 
+    // The decompressed blocks are appended here, starting with the one the file begins in and
+    // ending with the one it ends in, so reserve what the file needs plus the part of the first
+    // block before it and the part of the last block after it (at most one block). A buffer
+    // that grows by doubling copies a large file several times and leaves a chain of freed
+    // buffers behind.
+    //
+    // The directory is data from the file, so the reservation is bounded by what the remaining
+    // blocks can decompress to and by a fixed cap; a file that really is larger just grows the
+    // buffer the usual way. `try_reserve_exact` leaves a failed reservation to that growth too.
+    let largest_block = blocks
+        .iter()
+        .map(|b| b.uncompressed_size as usize)
+        .max()
+        .unwrap_or(0);
+    let available = blocks[block_index..].iter().fold(0usize, |sum, b| {
+        sum.saturating_add(b.uncompressed_size as usize)
+    });
+    let wanted = (file.size.max(0) as usize)
+        .saturating_add(skip_read)
+        .saturating_add(largest_block)
+        .min(available)
+        .min(MAX_RESERVE);
     let mut data = Vec::new();
+    let _ = data.try_reserve_exact(wanted);
     let mut block_offset = block_offset_uncompressed as usize;
 
     while let Some(block) = blocks.get(block_index) {
